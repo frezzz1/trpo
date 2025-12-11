@@ -1,0 +1,37 @@
+@startuml
+!define C4P https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master
+!include C4P/C4_Component.puml
+
+Container(loyalty_core_service, "Сервис ядра лояльности", "Java, Spring Boot", "Обработка транзакций, управление балансом, выполнение правил акций.")
+
+Component(api_controller, "REST API Контроллер", "Spring MVC", "Принимает внешние запросы (например, от POS/ERP), валидирует их, возвращает результаты.")
+Component(transaction_service, "Сервис транзакций", "Java", "Оркестрация процесса обработки операции: начисление или списание. Главный координатор.")
+Component(rule_engine, "Движок правил", "Drools / Spring Expression Language", "Вычисляет, какие акции/правила применяются к конкретной операции клиента.")
+Component(balance_service, "Сервис баланса", "Java", "Управление состоянием бонусного счета: запрос баланса, атомарное изменение.")
+Component(event_publisher, "Издатель событий", "Java, Spring Kafka", "Публикует события о транзакциях и изменениях баланса в Kafka для других сервисов.")
+
+ContainerDb(loyalty_db, "База данных лояльности", "PostgreSQL", "")
+ContainerQueue(kafka, "Брокер сообщений", "Apache Kafka", "")
+
+' Связи между компонентами внутри сервиса
+Rel(api_controller, transaction_service, "Передает данные для обработки", "Java вызов")
+Rel(transaction_service, rule_engine, "Запрашивает расчет бонусов/скидок", "Java вызов")
+Rel(transaction_service, balance_service, "Инициирует изменение баланса", "Java вызов")
+Rel(transaction_service, event_publisher, "Передает данные для публикации события", "Java вызов")
+Rel(rule_engine, balance_service, "Может запрашивать баланс для проверки условий правил", "Java вызов")
+
+' Связи с внешними контейнерами
+Rel(api_controller, loyalty_core_service, "Принимает вызовы", "")
+Rel(loyalty_core_service, loyalty_db, "Читает/пишет", "JDBC")
+Rel(loyalty_core_service, kafka, "Публикует", "Kafka Protocol")
+
+' Детализация связей с БД и очередью
+Rel(balance_service, loyalty_db, "Атомарно обновляет баланс в 'accounts'", "JDBC / @Transactional")
+Rel(rule_engine, loyalty_db, "Читает правила из 'campaign_rules' и условия из 'client_segments'", "JDBC")
+Rel(event_publisher, kafka, "Публикует события в топики 'loyalty.transactions', 'loyalty.balance.updates'", "Kafka Producer API")
+
+' Входящие и исходящие связи с другими сервисами (как на контейнерной диаграмме)
+Rel_R(erp_pos, api_controller, "Отправляет событие покупки", "REST API")
+Rel_D(event_publisher, kafka, "Публикует события")
+Rel_U(loyalty_db, balance_service, "Хранит данные")
+@enduml
