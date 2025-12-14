@@ -2,36 +2,93 @@
 !define C4P https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master
 !include C4P/C4_Component.puml
 
-Container(loyalty_core_service, "Сервис ядра лояльности", "Java, Spring Boot", "Обработка транзакций, управление балансом, выполнение правил акций.")
+title Component Diagram: Поток данных при начислении бонусов
 
-Component(api_controller, "REST API Контроллер", "Spring MVC", "Принимает внешние запросы (например, от POS/ERP), валидирует их, возвращает результаты.")
-Component(transaction_service, "Сервис транзакций", "Java", "Оркестрация процесса обработки операции: начисление или списание. Главный координатор.")
-Component(rule_engine, "Движок правил", "Drools / Spring Expression Language", "Вычисляет, какие акции/правила применяются к конкретной операции клиента.")
-Component(balance_service, "Сервис баланса", "Java", "Управление состоянием бонусного счета: запрос баланса, атомарное изменение.")
-Component(event_publisher, "Издатель событий", "Java, Spring Kafka", "Публикует события о транзакциях и изменениях баланса в Kafka для других сервисов.")
+Container(loyalty_core, "Сервис Ядра Лояльности", "Java, Spring Boot", "Обработка операций с бонусами")
 
-ContainerDb(loyalty_db, "База данных лояльности", "PostgreSQL", "")
-ContainerQueue(kafka, "Брокер сообщений", "Apache Kafka", "")
+' Внешние системы
+System_Ext(pos, "POS-система", "Магазин")
+System_Ext(client_svc, "Сервис клиентов", "CRM данные")
+System_Ext(campaign_svc, "Сервис акций", "Правила начисления")
+System_Ext(notification_svc, "Сервис уведомлений", "Отправка сообщений")
+System_Ext(kafka, "Брокер сообщений", "Kafka")
 
-' Связи между компонентами внутри сервиса
-Rel(api_controller, transaction_service, "Передает данные для обработки", "Java вызов")
-Rel(transaction_service, rule_engine, "Запрашивает расчет бонусов/скидок", "Java вызов")
-Rel(transaction_service, balance_service, "Инициирует изменение баланса", "Java вызов")
-Rel(transaction_service, event_publisher, "Передает данные для публикации события", "Java вызов")
-Rel(rule_engine, balance_service, "Может запрашивать баланс для проверки условий правил", "Java вызов")
+' Основные компоненты процесса
+Component(api_gateway, "API Gateway", "REST Controller", "Точка входа для операций")
+Component(purchase_processor, "Purchase Processor", "Spring Service", "Обработчик покупок")
+Component(rule_engine, "Rule Engine", "Drools/SpEL", "Движок правил начисления")
+Component(balance_service, "Balance Service", "Spring Service", "Управление балансом")
+Component(transaction_store, "Transaction Store", "JPA Repository", "Хранение транзакций")
+Component(event_dispatcher, "Event Dispatcher", "Spring Events", "Распределение событий")
 
-' Связи с внешними контейнерами
-Rel(api_controller, loyalty_core_service, "Принимает вызовы", "")
-Rel(loyalty_core_service, loyalty_db, "Читает/пишет", "JDBC")
-Rel(loyalty_core_service, kafka, "Публикует", "Kafka Protocol")
+' Базы данных
+ContainerDb(transactions_db, "Transactions DB", "PostgreSQL", "Таблицы: transactions, bonuses")
+ContainerDb(balances_db, "Balances DB", "PostgreSQL", "Таблицы: client_balances")
 
-' Детализация связей с БД и очередью
-Rel(balance_service, loyalty_db, "Атомарно обновляет баланс в 'accounts'", "JDBC / @Transactional")
-Rel(rule_engine, loyalty_db, "Читает правила из 'campaign_rules' и условия из 'client_segments'", "JDBC")
-Rel(event_publisher, kafka, "Публикует события в топики 'loyalty.transactions', 'loyalty.balance.updates'", "Kafka Producer API")
+' Кэш
+Container(redis_cache, "Rules Cache", "Redis", "Кэширование правил и ставок")
 
-' Входящие и исходящие связи с другими сервисами (как на контейнерной диаграмме)
-Rel_R(erp_pos, api_controller, "Отправляет событие покупки", "REST API")
-Rel_D(event_publisher, kafka, "Публикует события")
-Rel_U(loyalty_db, balance_service, "Хранит данные")
+' --- ПОТОК ДАННЫХ ДЛЯ НАЧИСЛЕНИЯ БОНУСОВ ---
+
+' Шаг 1: Получение покупки
+Rel(pos, api_gateway, "1. Purchase Data\n{amount: 1000, clientId: 123}", "REST/HTTPS")
+
+' Шаг 2: Обработка покупки
+Rel(api_gateway, purchase_processor, "2. Validated Purchase\n(проверенные данные)", "Java метод")
+
+' Шаг 3: Получение данных клиента
+Rel(purchase_processor, client_svc, "3. Get Client Data\n(GET /clients/123)", "REST/HTTPS")
+Rel(client_svc, purchase_processor, "3a. Client Profile\n{tier: GOLD, joinDate: ...}", "REST/HTTPS")
+
+' Шаг 4: Получение правил начисления
+Rel(purchase_processor, campaign_svc, "4. Get Active Campaigns\nдля клиента GOLD", "REST/HTTPS")
+Rel(campaign_svc, purchase_processor, "4a. Campaign Rules\n[{rate: 5%, productIds: [...]}]", "REST/HTTPS")
+
+' Шаг 5: Расчет бонусов
+Rel(purchase_processor, rule_engine, "5. Calculate Bonus\n(покупка + правила + клиент)", "Java метод")
+
+' Шаг 6: Проверка кэша правил
+Rel(rule_engine, redis_cache, "6. Check Rules Cache\n(кешированные ставки)", "Redis")
+
+' Шаг 7: Обновление баланса
+Rel(rule_engine, balance_service, "7. Update Balance\n(clientId: 123, bonus: 50)", "Java метод")
+Rel(balance_service, balances_db, "8. Atomic Update\nUPDATE balances SET amount = ...", "JDBC")
+
+' Шаг 8: Сохранение транзакции
+Rel(purchase_processor, transaction_store, "9. Save Transaction\n(покупка + начисление)", "JPA")
+Rel(transaction_store, transactions_db, "10. Persist\nINSERT INTO transactions...", "JDBC")
+
+' Шаг 9: Публикация событий
+Rel(purchase_processor, event_dispatcher, "11. Dispatch Events\n(BonusAwardedEvent)", "Spring Event")
+
+' Шаг 10: Отправка в Kafka
+Rel(event_dispatcher, kafka, "12. Publish to Kafka\nтопик: loyalty.events", "Kafka Protocol")
+
+' Шаг 11: Уведомление клиента
+Rel(event_dispatcher, notification_svc, "13. Send Notification\nEmail/SMS о начислении", "REST/HTTPS")
+
+' Возврат результата
+Rel(balance_service, purchase_processor, "14. Updated Balance\n{total: 550, added: 50}", "Java метод")
+Rel(purchase_processor, api_gateway, "15. Processing Result\n{success: true, bonus: 50}", "Java метод")
+Rel(api_gateway, pos, "16. API Response\n200 OK с данными начисления", "REST/HTTPS")
+
+' --- ЛЕГЕНДА И КОММЕНТАРИИ ---
+note left of pos #lightblue
+**Инициатор:** Кассир пробивает покупку
+**Данные:** Чек на 1000 руб.
+для клиента ID 123
+end note
+
+note right of notification_svc #lightgreen
+**Результат:** Клиент получает
+уведомление о начислении
+50 бонусных баллов
+end note
+
+legend bottom
+<color:blue>**Синий:** Внешние системы</color> |
+<color:green>**Зеленый:** Основной поток</color> |
+**Цифры:** Порядок вызовов
+endlegend
+
 @enduml
