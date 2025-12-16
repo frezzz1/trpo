@@ -1,0 +1,65 @@
+@startuml
+!define C4P https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master
+!include C4P/C4_Deployment.puml
+
+title Maintenance Pipeline: Система Лояльности
+
+' Основные стадии
+Deployment_Node(ci, "CI - Непрерывная интеграция", "", #E8F5E9) {
+    Container(developer, "Разработчик", "Локальная машина", "Пишет код, запускает тесты")
+    Container(git, "Git репозиторий", "GitLab", "Ветки: main, develop, feature/*")
+    Container(ci_server, "CI Сервер", "Jenkins", "Автоматическая сборка и тестирование")
+    Container(registry, "Registry", "Nexus/Docker Hub", "Хранилище Docker образов")
+}
+
+Deployment_Node(cd, "CD - Непрерывная доставка", "", #FFF3E0) {
+    Container(staging, "Staging окружение", "Kubernetes", "Предпродакшн тестирование")
+    Container(prod, "Production окружение", "Kubernetes", "Рабочая среда")
+    Container(canary, "Canary deployment", "Traffic router", "Постепенный rollout")
+}
+
+Deployment_Node(monitoring, "Мониторинг и обслуживание", "", #E3F2FD) {
+    Container(metrics, "Метрики", "Prometheus", "Сбор показателей")
+    Container(logs, "Логи", "ELK Stack", "Анализ логов")
+    Container(alerts, "Алертинг", "AlertManager", "Уведомления о проблемах")
+    Container(backup, "Бэкапы", "Velero, pgBackRest", "Резервное копирование")
+}
+
+Deployment_Node(security, "Безопасность", "", #FFEBEE) {
+    Container(scan, "Security scanning", "Trivy, Clair", "Сканирование уязвимостей")
+    Container(vault, "Secrets management", "HashiCorp Vault", "Управление секретами")
+    Container(waf, "WAF", "Cloud WAF", "Защита приложений")
+}
+
+' Поток CI/CD
+Rel(developer, git, "1. Push code", "Git")
+Rel(git, ci_server, "2. Trigger build", "Webhook")
+Rel(ci_server, registry, "3. Build & push image", "Docker")
+Rel(ci_server, scan, "4. Security scan", "API")
+Rel(registry, staging, "5. Deploy to staging", "kubectl")
+Rel(staging, prod, "6. Promote to production", "Canary")
+Rel(prod, metrics, "7. Send metrics", "HTTP")
+Rel(prod, logs, "8. Send logs", "Filebeat")
+Rel(metrics, alerts, "9. Generate alerts", "Rules")
+Rel(prod, backup, "10. Backup data", "Scheduled")
+Rel(vault, prod, "11. Provide secrets", "API")
+Rel(waf, prod, "12. Protect traffic", "Reverse proxy")
+
+note right of ci_server
+**CI Процесс:**
+- Сборка приложения
+- Unit тесты
+- Интеграционные тесты
+- Code quality check
+- Security scan
+end note
+
+note right of prod
+**Production:**
+- 3 реплики сервисов
+- Auto-scaling
+- Multi-AZ
+- 99.95% доступность
+end note
+
+@enduml

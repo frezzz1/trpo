@@ -1,0 +1,117 @@
+@startuml
+!define C4P https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master
+!include C4P/C4_Component.puml
+
+title Component Diagram: Процесс "Применение бонусных баллов для скидки"
+
+' --- КОНТЕЙНЕР СЕРВИСА ---
+Container(loyalty_core, "Сервис Ядра Лояльности", "Java, Spring Boot", "Обработка операций с бонусами")
+
+' --- ВНУТРЕННИЕ КОМПОНЕНТЫ СЕРВИСА ---
+
+' API слой
+Component(api_controller, "Bonus Redemption Controller", "Spring @RestController", "REST endpoint для списания баллов")
+Component(request_validator, "Request Validator", "Bean Validation", "Валидация входящих запросов")
+Component(response_builder, "Response Builder", "DTO Mapper", "Формирование ответов")
+
+' Сервисный слой
+Component(redemption_service, "Bonus Redemption Service", "@Service", "Оркестрация процесса списания баллов")
+Component(balance_checker, "Balance Checker", "Domain Service", "Проверка достаточности баллов")
+Component(discount_calculator, "Discount Calculator", "Domain Service", "Расчет скидки по баллам")
+Component(transaction_creator, "Transaction Creator", "Domain Service", "Создание транзакции списания")
+
+' Доменный слой
+Component(client_aggregate, "Client Aggregate", "Aggregate Root", "Агрегат клиента с балансом")
+Component(bonus_transaction, "Bonus Transaction", "Entity", "Сущность транзакции")
+Component(redemption_rules, "Redemption Rules", "Value Object", "Правила конвертации баллов в скидку")
+
+' Инфраструктурный слой
+Component(balance_repository, "Balance Repository", "JPA Repository", "Доступ к балансам клиентов")
+Component(transaction_repository, "Transaction Repository", "JPA Repository", "Сохранение транзакций")
+Component(cache_client, "Redis Cache Client", "RedisTemplate", "Кэширование балансов")
+Component(event_publisher, "Domain Event Publisher", "Spring ApplicationEventPublisher", "Публикация событий")
+
+' Внешние зависимости
+ContainerDb(loyalty_db, "База данных лояльности", "PostgreSQL", "Таблицы: balances, transactions")
+Container(redis_cache, "Redis Cache", "Redis", "Кэш балансов и правил")
+ContainerQueue(kafka, "Брокер сообщений", "Apache Kafka", "Топик: loyalty.events")
+
+' --- ПОТОК ВЗАИМОДЕЙСТВИЯ (Процесс списания баллов) ---
+
+' 1. Внешний запрос (например, от кассового приложения)
+Rel_R(api_controller, loyalty_core, "Вход: POST /api/v1/bonus/redemptions")
+
+' 2. Валидация запроса
+Rel(api_controller, request_validator, "1. Валидация DTO", "Java метод")
+Rel(request_validator, api_controller, "1a. Результат валидации", "Java метод")
+
+' 3. Вызов бизнес-логики
+Rel(api_controller, redemption_service, "2. Запрос на списание", "Java метод")
+
+' 4. Проверка баланса
+Rel(redemption_service, balance_checker, "3. Проверить баланс клиента", "Java метод")
+Rel(balance_checker, cache_client, "3a. Проверить кэш баланса", "Redis GET")
+Rel(cache_client, balance_checker, "3b. Значение из кэша (или null)", "Redis response")
+Rel(balance_checker, balance_repository, "3c. Если нет в кэше - запрос в БД", "JPA findById")
+Rel(balance_repository, loyalty_db, "3d. SELECT balance FROM client_balances", "JDBC")
+Rel(loyalty_db, balance_repository, "3e. Результат запроса", "JDBC ResultSet")
+Rel(balance_repository, balance_checker, "3f. Объект Balance", "JPA Entity")
+Rel(balance_checker, client_aggregate, "3g. Создать агрегат клиента", "Domain method")
+
+' 5. Расчет скидки
+Rel(redemption_service, discount_calculator, "4. Рассчитать скидку", "Java метод")
+Rel(discount_calculator, redemption_rules, "4a. Применить правила конвертации", "Domain logic")
+Rel(discount_calculator, client_aggregate, "4b. Получить уровень клиента", "Domain method")
+
+' 6. Создание транзакции
+Rel(redemption_service, transaction_creator, "5. Создать транзакцию списания", "Java метод")
+Rel(transaction_creator, bonus_transaction, "5a. Инициализировать сущность", "Domain constructor")
+Rel(transaction_creator, client_aggregate, "5b. Списать баллы с агрегата", "Domain method: redeem()")
+
+' 7. Сохранение изменений
+Rel(redemption_service, balance_repository, "6. Сохранить обновленный баланс", "JPA save()")
+Rel(balance_repository, loyalty_db, "6a. UPDATE client_balances", "JDBC")
+Rel(redemption_service, transaction_repository, "7. Сохранить транзакцию", "JPA save()")
+Rel(transaction_repository, loyalty_db, "7a. INSERT INTO transactions", "JDBC")
+
+' 8. Обновление кэша
+Rel(redemption_service, cache_client, "8. Обновить кэш баланса", "Redis SET")
+
+' 9. Публикация событий
+Rel(redemption_service, event_publisher, "9. Опубликовать событие", "publishEvent()")
+Rel(event_publisher, kafka, "9a. Отправить в Kafka", "Kafka Producer")
+
+' 10. Формирование ответа
+Rel(redemption_service, response_builder, "10. Собрать ответ", "Java метод")
+Rel(response_builder, api_controller, "10a. Готовый DTO ответа", "Java метод")
+
+' 11. Возврат результата
+Rel(api_controller, loyalty_core, "Выход: 200 OK + redemption details", "REST response")
+
+' --- КОММЕНТАРИИ И ПОЯСНЕНИЯ ---
+note top of redemption_service
+**Бизнес-процесс:**
+1. Клиент хочет использовать 100 баллов
+2. Система проверяет доступность
+3. Рассчитывает эквивалент в деньгах (1 балл = 1 рубль)
+4. Создает транзакцию списания
+5. Обновляет баланс
+6. Отправляет подтверждение
+end note
+
+note right of loyalty_db
+**Структура данных:**
+- client_balances
+  (client_id, balance)
+- transactions
+  (id, client_id, type, amount, status)
+end note
+
+legend bottom
+**Легенда процесса списания баллов:**
+<color:blue>Синие стрелки</color> - основной поток выполнения
+<color:green>Зеленые стрелки</color> - данные/результаты
+Числа - порядок выполнения шагов
+endlegend
+
+@enduml
